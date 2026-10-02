@@ -756,6 +756,7 @@ svg.chart.sweep .xnum { fill: var(--ink); font-size: calc(var(--sw-fs) * 0.95); 
   .wf.has-sim .wf-row { grid-template-columns: 2.8rem minmax(0, 1fr) 2.2rem 6.6rem 5rem; }
 }
 .nowrap { white-space: nowrap; }
+#history tbody th { white-space: normal; min-width: 11rem; }
 .net-tag { display: block; margin-top: 0.3rem; font-family: var(--font-mono); font-size: 0.78rem; font-weight: 600; color: var(--ink-3); }
 .sweep-table th:first-child { white-space: nowrap; }
 .sweep-table thead th { white-space: nowrap; }

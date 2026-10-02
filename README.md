@@ -40,7 +40,7 @@ O servidor procura `wwwroot` e `appsettings.json` na pasta atual, na pasta do ex
 
 **Por que Release.** O modo Debug desliga otimizações do compilador JIT e acrescenta verificações, o que distorce justamente o que se quer medir. Rode sempre com `-c Release` e **sem depurador anexado** (F5 no Visual Studio anexa um). Feche aplicativos pesados e, em notebook, ligue na tomada.
 
-**Primeira execução.** O servidor cria o banco `src/ApiBenchmark.Web/benchmark.db` (SQLite, ignorado pelo git) e o popula com um seed determinístico (`new Random(42)`): 20 categorias, 30 fornecedores, 500 produtos, 200 clientes e, para cada cliente, de 3 a 6 pedidos com de 2 a 5 itens. A faixa de ambiente no topo do dashboard mostra as contagens reais. Para recriar o banco, pare o servidor e apague `benchmark.db*`.
+**Primeira execução.** O servidor cria o banco `src/ApiBenchmark.Web/benchmark.db` (SQLite, ignorado pelo git) e o popula com um seed determinístico (`new Random(42)`): 20 categorias, 30 fornecedores, 500 produtos base, 200 clientes e, para cada cliente, de 3 a 6 pedidos com de 2 a 5 itens. Em seguida a aplicação completa a tabela de produtos até `Seed:Products` (padrão 100.000, `Random(4242)` independente, em lotes; cerca de 4 s no SQLite), sem alterar nada do restante do seed; num banco já existente com 500 produtos ela só insere os que faltam, e uma interrupção retoma do último lote. A faixa de ambiente no topo do dashboard mostra as contagens reais. Para recriar o banco, pare o servidor e apague `benchmark.db*`.
 
 **Uso básico no dashboard.**
 
@@ -48,6 +48,7 @@ O servidor procura `wwwroot` e `appsettings.json` na pasta atual, na pasta do ex
 2. Ajuste iterações, warm-up e concorrência (seção 02). Os valores padrão são 1.000, 50 e 1.
 3. Clique em **EXECUTAR BENCHMARK**. Acompanhe cartões, comparativo, gráficos, trace das requisições e o texto de leitura gerado dos números medidos.
 4. **Executar todos os cenários** roda os cinco em sequência e monta a matriz-resumo. O histórico guarda os últimos 20 runs em memória.
+5. **Rede simulada** (seção 02): injeta, no cliente do laboratório, latência por requisição (0 a 1.000 ms) e/ou limite de banda (0,1 a 10.000 Mbps) para mostrar o custo de rede que o loopback esconde; é uma simulação, não vale no warm-up e a espera é precisa a menos de 1 ms. O botão **Varredura de rede** roda o cenário em 0, 20, 50 e 100 ms e desenha a mediana por latência, marcando onde uma variante passa a ganhar da outra, se houver.
 
 Não mexa no navegador durante um run (não recarregue a página, não abra outra aba do dashboard): qualquer requisição extra entra nas métricas de SQL, CPU e alocação.
 
@@ -57,6 +58,7 @@ Não mexa no navegador durante um run (não recarregue a página, não abra outr
 |---|---|---|
 | `ConnectionStrings:Lab` | `Data Source=benchmark.db` | Arquivo SQLite (caminho relativo é resolvido a partir da pasta do projeto Web) |
 | `Lab:BaseAddress` | descoberto do próprio servidor | Endereço que o motor usa para chamar o servidor; só defina se a descoberta automática falhar |
+| `Seed:Products` | `100000` | Total de produtos (mínimo 500); completa o banco existente sem apagar nada |
 | `Database:Provider` | `sqlite` | `sqlite` ou `postgres` (ver [seção 6](#6-modo-postgresql-opcional)) |
 | `ConnectionStrings:LabPostgres` | `Host=localhost;Port=5433;Database=lab;Username=lab;Password=lab` | Conexão do modo PostgreSQL |
 

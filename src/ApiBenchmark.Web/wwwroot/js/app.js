@@ -1306,7 +1306,7 @@ function renderMethodNet(run) {
   if (!box) return;
   const n = run ? N.netParams(run.config) : { on: false };
   box.textContent = n.on
-    ? 'Rede simulada: o atraso (latência mais tempo de transferência) é injetado no cliente do laboratório, por requisição, depois do último byte da resposta e antes de ela contar como concluída; o tráfego em si continua em loopback e o atraso não é aplicado no warm-up.'
+    ? 'Rede simulada: o atraso (latência mais tempo de transferência) é injetado no cliente do laboratório, por requisição, depois do último byte da resposta e antes de ela contar como concluída; o tráfego em si continua em loopback e o atraso não é aplicado no warm-up. O tempo real medido, a CPU e a memória com rede simulada ficam acima dos de um run em loopback puro (threads e CPU ociosos esperando entre requisições, mais a alocação do próprio simulador): compare essas métricas só entre runs com a mesma rede.'
     : 'Rede simulada desligada neste run (loopback puro); quando ligada, o atraso é injetado no cliente do laboratório, por requisição, e não vale no warm-up.';
 }
 
