@@ -95,13 +95,13 @@ export const GLOSSARY = [
     key: 'net',
     term: 'Rede simulada',
     tip: 'SIMULAÇÃO: espera injetada no cliente em cada requisição (latência fixa + tempo de transferir os bytes na banda escolhida).',
-    text: 'O laboratório roda em loopback, onde a rede custa quase zero. A rede simulada injeta no cliente uma espera por requisição HTTP: a latência escolhida mais o tempo de transferir os bytes na banda escolhida. É uma SIMULAÇÃO, não uma rede real. A latência, a mediana e o throughput passam a incluir esse atraso.',
+    text: 'O laboratório roda em loopback, onde a rede custa quase zero. A rede simulada injeta no cliente uma espera por requisição HTTP: a latência escolhida mais o tempo de transferir os bytes na banda escolhida. É uma SIMULAÇÃO, não uma rede real. A banda é um enlace único e compartilhado: requisições simultâneas dividem a banda (esperam a vez), em vez de cada uma receber a banda inteira; a latência, ao contrário, corre em paralelo. A latência, a mediana e o throughput passam a incluir esse atraso.',
   },
   {
     key: 'simSum',
     term: 'Rede injetada (soma por operação)',
-    tip: 'Soma dos atrasos simulados de todas as requisições da operação. Com paralelismo ou concorrência, os atrasos se sobrepõem.',
-    text: 'Soma dos atrasos simulados de todas as requisições de uma operação. Com requisições em paralelo ou concorrência maior que 1, os atrasos se sobrepõem na prática: a soma passa a ser maior que o acréscimo real na latência e, por isso, não é subtraída da mediana.',
+    tip: 'Soma dos atrasos simulados de todas as requisições da operação. Com requisições em paralelo (REST em paralelo), os atrasos se sobrepõem e a soma supera o acréscimo na latência.',
+    text: 'Soma dos atrasos simulados de todas as requisições de uma operação. Com as requisições em sequência, a soma entra inteira na latência. Com requisições em paralelo (opção “REST em paralelo”), os atrasos delas se sobrepõem na prática: a soma passa a ser maior que o acréscimo real na latência e, por isso, não é subtraída da mediana. Concorrência maior que 1 não muda isso: ela sobrepõe operações diferentes, não as requisições de uma mesma operação. Com banda limitada, o atraso de uma requisição inclui a espera pela vez no enlace compartilhado.',
   },
   {
     key: 'real',

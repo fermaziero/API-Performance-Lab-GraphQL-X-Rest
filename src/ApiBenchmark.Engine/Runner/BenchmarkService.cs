@@ -169,13 +169,19 @@ internal sealed class BenchmarkService : IDisposable
             return false;
         }
 
-        var iterations = request.Iterations ?? DefaultIterations;
-        var warmup = request.Warmup ?? DefaultWarmup;
+        var iterations = request.Iterations ?? scenario.Defaults?.Iterations ?? DefaultIterations;
+        var warmup = request.Warmup ?? scenario.Defaults?.Warmup ?? DefaultWarmup;
         var concurrency = request.Concurrency ?? DefaultConcurrency;
 
         if (iterations is < 1 or > MaxIterations)
         {
             error = $"'iterations' deve estar entre 1 e {MaxIterations}.";
+            return false;
+        }
+
+        if (scenario.MaxIterations is { } scenarioMaxIterations && iterations > scenarioMaxIterations)
+        {
+            error = $"'iterations' deve estar entre 1 e {scenarioMaxIterations} no cenário '{scenario.Id}' (cenário pesado).";
             return false;
         }
 
@@ -188,6 +194,13 @@ internal sealed class BenchmarkService : IDisposable
         if (concurrency is < 1 or > MaxConcurrency)
         {
             error = $"'concurrency' deve estar entre 1 e {MaxConcurrency}.";
+            return false;
+        }
+
+        if (scenario.MaxConcurrency is { } scenarioMaxConcurrency && concurrency > scenarioMaxConcurrency)
+        {
+            error = $"'concurrency' deve estar entre 1 e {scenarioMaxConcurrency} no cenário '{scenario.Id}' " +
+                    "(cenário pesado: mais clientes em paralelo esgotam a memória do servidor).";
             return false;
         }
 
@@ -248,7 +261,7 @@ internal sealed class BenchmarkService : IDisposable
     // para o cold run da primeira variante não carregar sozinho esse custo compartilhado.
     private async Task PrimeConnectionAsync(HttpClient client, CancellationToken ct)
     {
-        if (Interlocked.Exchange(ref _connectionPrimed, 1) != 0)
+        if (Volatile.Read(ref _connectionPrimed) != 0)
         {
             return;
         }
@@ -257,10 +270,11 @@ internal sealed class BenchmarkService : IDisposable
         {
             using var response = await client.GetAsync("/api/lab/scenarios", ct).ConfigureAwait(false);
             await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+            Volatile.Write(ref _connectionPrimed, 1);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
-            Interlocked.Exchange(ref _connectionPrimed, 0);
+            // A marca só liga depois do sucesso: falha (aqui) ou cancelamento (propaga) fazem o próximo run tentar o preparo de novo.
         }
     }
 

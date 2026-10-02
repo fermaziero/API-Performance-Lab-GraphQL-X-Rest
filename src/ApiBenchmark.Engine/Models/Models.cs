@@ -6,12 +6,17 @@ public enum RunStatus { Running, Completed, Failed, Cancelled }
 
 public enum RunPhase { Cold, Warmup, Benchmark, Done }
 
+public sealed record ScenarioDefaults(int Iterations, int Warmup);
+
 public sealed record ScenarioInfo(
     string Id,
     string Title,
     string Description,
     string Need,
-    IReadOnlyList<VariantInfo> Variants);
+    IReadOnlyList<VariantInfo> Variants,
+    ScenarioDefaults? Defaults,
+    int? MaxIterations,
+    int? MaxConcurrency);
 
 public sealed record VariantInfo(
     string Id,

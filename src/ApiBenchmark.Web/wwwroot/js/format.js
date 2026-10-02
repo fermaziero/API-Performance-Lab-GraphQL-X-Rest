@@ -53,7 +53,13 @@ export function msParts(ms) {
     if (roundTo(abs, d) < 1000) return { value: num(ms, 0, d), unit: 'ms' };
   }
   const s = ms / 1000;
-  return { value: num(s, 0, adaptiveDigits(Math.abs(s))), unit: 's' };
+  const sAbs = Math.abs(s);
+  if (roundTo(sAbs, adaptiveDigits(sAbs)) < 1000) return { value: num(s, 0, adaptiveDigits(sAbs)), unit: 's' };
+  const min = s / 60;
+  const minAbs = Math.abs(min);
+  if (roundTo(minAbs, adaptiveDigits(minAbs)) < 1000) return { value: num(min, 0, adaptiveDigits(minAbs)), unit: 'min' };
+  const h = min / 60;
+  return { value: num(h, 0, adaptiveDigits(Math.abs(h))), unit: 'h' };
 }
 
 export function ms(v) {
@@ -104,6 +110,7 @@ export function duration(msValue) {
   const wholeSeconds = Math.round(totalSec);
   const min = Math.floor(wholeSeconds / 60);
   const sec = wholeSeconds % 60;
+  if (min >= 60) return `${Math.floor(min / 60)}${NBSP}h ${String(min % 60).padStart(2, '0')}${NBSP}min`;
   return `${min}${NBSP}min ${String(sec).padStart(2, '0')}${NBSP}s`;
 }
 

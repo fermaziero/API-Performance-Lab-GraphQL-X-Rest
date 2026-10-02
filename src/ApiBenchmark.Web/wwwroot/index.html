@@ -60,6 +60,7 @@
     <section class="panel" aria-labelledby="h-scn">
       <div class="sec-h"><span class="num">01</span><h2 id="h-scn">Cenário</h2><p>Cada cenário é um padrão de acesso a dados. A tela precisa sempre do mesmo conteúdo; muda o caminho até ele.</p></div>
       <div id="scenarios" class="scn-grid" role="radiogroup" aria-labelledby="h-scn"><p class="muted">Carregando cenários…</p></div>
+      <div id="scn-notice" class="scn-notice" role="status" aria-live="polite" hidden></div>
       <div id="scn-detail" class="scn-detail" aria-live="polite"></div>
     </section>
 
@@ -75,11 +76,13 @@
             <button type="button" class="chip-btn" data-v="10000">10.000</button>
           </div>
           <label class="inline">ou valor livre <input id="iter" type="number" inputmode="numeric" min="1" max="10000" step="1" value="1000"></label>
+          <p class="hint" id="iter-hint" hidden></p>
         </fieldset>
         <fieldset class="field">
           <legend>Warm-up (descartado)</legend>
           <label class="inline"><input id="warmup" type="number" inputmode="numeric" min="0" max="1000" step="1" value="50"> operações</label>
           <p class="hint">0 a 1.000 (mínimo: o motor estende até a latência estabilizar)</p>
+          <p class="hint" id="warm-hint" hidden></p>
         </fieldset>
         <fieldset class="field">
           <legend>Concorrência</legend>
@@ -88,7 +91,7 @@
             <button type="button" class="chip-btn" data-v="4">4</button>
             <button type="button" class="chip-btn" data-v="16">16</button>
           </div>
-          <p class="hint">workers simultâneos por bloco</p>
+          <p class="hint" id="conc-hint">workers simultâneos por bloco</p>
         </fieldset>
         <fieldset class="field">
           <legend>REST em paralelo</legend>
@@ -120,15 +123,17 @@
             </div>
           </div>
           <p id="net-summary" class="net-summary" aria-live="polite"></p>
+          <p id="net-warn" class="net-warn" role="status" hidden></p>
         </fieldset>
       </form>
       <p id="cfg-summary" class="cfg-summary" aria-live="polite"></p>
       <div class="actions">
         <button type="button" class="btn btn-primary" id="btn-run"><span aria-hidden="true">▶</span> EXECUTAR BENCHMARK</button>
         <button type="button" class="btn btn-danger" id="btn-cancel" hidden>■ Cancelar</button>
-        <button type="button" class="btn btn-secondary" id="btn-all">⟳ Executar todos os cenários</button>
+        <button type="button" class="btn btn-secondary" id="btn-all" aria-describedby="all-hint">⟳ Executar todos os cenários</button>
         <button type="button" class="btn btn-secondary" id="btn-sweep" aria-describedby="sweep-hint"><span aria-hidden="true">≋</span> Varredura de rede</button>
       </div>
+      <p id="all-hint" class="hint sweep-hint"></p>
       <p id="sweep-hint" class="hint sweep-hint"></p>
     </section>
 

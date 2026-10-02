@@ -15,6 +15,7 @@ public static class DbSeeder
     public const int SupplierCount = 30;
     public const int BaseProductCount = 500;
     public const int DefaultProductTarget = 100_000;
+    public const int MaxProductTarget = 5_000_000;
     public const int ProductBatchSize = 5_000;
     public const int CustomerCount = 200;
 
@@ -106,7 +107,14 @@ public static class DbSeeder
 
         if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
         {
-            throw new DatabaseSetupException($"Seed:Products inválido: '{raw}'. Informe um inteiro maior ou igual a {BaseProductCount}.");
+            throw new DatabaseSetupException(
+                $"Seed:Products inválido: '{raw}'. Informe um inteiro entre {BaseProductCount} e {MaxProductTarget}.");
+        }
+
+        if (value > MaxProductTarget)
+        {
+            throw new DatabaseSetupException(
+                $"Seed:Products={value} acima do máximo ({MaxProductTarget}): o seed levaria horas e gigabytes de disco. Informe um inteiro entre {BaseProductCount} e {MaxProductTarget}.");
         }
 
         if (value < BaseProductCount)

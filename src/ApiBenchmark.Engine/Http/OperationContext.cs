@@ -160,10 +160,10 @@ internal sealed class OperationContext
 
         if (_network is not null && !transport)
         {
-            var target = _network.TargetDelayMs(sent, body.Length);
-            if (target > 0)
+            var deadline = _network.ReserveDeadline(realEnd, sent, body.Length);
+            if (deadline > realEnd)
             {
-                end = await _network.WaitAsync(realEnd, target, _ct).ConfigureAwait(false);
+                end = await _network.WaitAsync(deadline, _ct).ConfigureAwait(false);
                 simulatedMs = ToMilliseconds(realEnd, end);
             }
         }

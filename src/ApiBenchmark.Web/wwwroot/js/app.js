@@ -12,6 +12,8 @@ const MIN_TAIL_SAMPLES = 100;
 const PHASES = ['cold', 'warmup', 'benchmark', 'done'];
 const STATUS_TEXT = { running: 'Em execução', completed: 'Concluído', failed: 'Falhou', cancelled: 'Cancelado' };
 const DASHES = ['', '7 4', '2 4', '9 4 2 4'];
+const GLOBAL = { iterations: 10000, warmup: 1000, concurrency: 32 };
+const SAMPLE_VIEW_CHARS = 6000;
 
 const { esc, isNum } = F;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -23,6 +25,7 @@ const state = {
   scenarios: [],
   scenarioId: null,
   config: { iterations: 1000, warmup: 50, concurrency: 1, restParallel: false, simulatedLatencyMs: 0, simulatedBandwidthMbps: null },
+  general: { iterations: 1000, warmup: 50, concurrency: 1 },
   run: null,
   sweep: null,
   viewingHistory: false,
@@ -206,12 +209,14 @@ function renderScenarios() {
   box.innerHTML = state.scenarios.map((s) => {
     const variants = Array.isArray(s.variants) ? s.variants : [];
     const checked = s.id === state.scenarioId ? 'checked' : '';
-    return `<label class="scn">
+    const lim = scenarioLimits(s);
+    const heavy = lim.heavy ? `<span class="heavy-tag" title="${esc(limitsSummary(lim))}">pesado</span>` : '';
+    return `<label class="scn${lim.heavy ? ' heavy' : ''}">
       <input type="radio" name="scenario" value="${esc(s.id)}" ${checked}>
       <h3>${esc(s.title)}</h3>
       <p>${esc(s.description)}</p>
       ${s.need ? `<p class="scn-need"><b>A tela precisa:</b> ${esc(s.need)}</p>` : ''}
-      <span class="tags">${variants.map((v) => `<span class="kindtag kind-${esc(v.kind)}">${esc(v.id)}</span>`).join('')}</span>
+      <span class="tags">${variants.map((v) => `<span class="kindtag kind-${esc(v.kind)}">${esc(v.id)}</span>`).join('')}${heavy}</span>
     </label>`;
   }).join('');
   box.querySelectorAll('input[name="scenario"]').forEach((r) => {
@@ -241,9 +246,11 @@ function renderScenarioDetail() {
 }
 
 function selectScenario(id) {
+  const changed = id !== state.scenarioId;
   state.scenarioId = id;
   const radio = document.querySelector(`input[name="scenario"][value="${CSS.escape(id)}"]`);
   if (radio) radio.checked = true;
+  if (changed) applyScenarioConfig();
   renderScenarioDetail();
   renderConfigState();
 }
@@ -255,6 +262,7 @@ async function loadScenarios() {
     const list = await api.scenarios();
     state.scenarios = Array.isArray(list) ? list : [];
     if (!scenarioOf(state.scenarioId)) state.scenarioId = state.scenarios[0] ? state.scenarios[0].id : null;
+    applyScenarioConfig();
     renderScenarios();
     renderConfigState();
   } catch (e) {
@@ -266,19 +274,116 @@ async function loadScenarios() {
 
 /* ----------------------------------------------------------- configuração */
 
+const okInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const posInt = (v) => (isNum(v) && v >= 1 ? Math.floor(v) : null);
+
+// Padrões e limites que o servidor declara por cenário; campo ausente ou null = comportamento geral.
+function scenarioLimits(s) {
+  const out = { defaults: null, maxIterations: null, maxConcurrency: null, iterMax: GLOBAL.iterations, concMax: GLOBAL.concurrency, heavy: false };
+  if (!s) return out;
+  const maxIt = posInt(s.maxIterations);
+  const maxConc = posInt(s.maxConcurrency);
+  if (maxIt !== null) {
+    out.maxIterations = Math.min(maxIt, GLOBAL.iterations);
+    out.iterMax = out.maxIterations;
+  }
+  if (maxConc !== null) {
+    out.maxConcurrency = Math.min(maxConc, GLOBAL.concurrency);
+    out.concMax = out.maxConcurrency;
+  }
+  const d = s.defaults && typeof s.defaults === 'object' ? s.defaults : null;
+  if (d) {
+    const it = posInt(d.iterations);
+    const wu = isNum(d.warmup) && d.warmup >= 0 ? Math.floor(d.warmup) : null;
+    if (it !== null || wu !== null) {
+      out.defaults = {
+        iterations: it === null ? null : Math.min(it, out.iterMax),
+        warmup: wu === null ? null : Math.min(wu, GLOBAL.warmup),
+      };
+    }
+  }
+  out.heavy = !!out.defaults || out.maxIterations !== null || out.maxConcurrency !== null;
+  return out;
+}
+
+// Configuração que um cenário realmente usa a partir da escolha geral do usuário: padrão do cenário, depois o teto.
+function effectiveConfig(s, base) {
+  const lim = scenarioLimits(s);
+  const d = lim.defaults;
+  let iterations = d && d.iterations !== null ? d.iterations : base.iterations;
+  const warmup = d && d.warmup !== null ? d.warmup : base.warmup;
+  let concurrency = base.concurrency;
+  if (lim.maxIterations !== null && isNum(iterations)) iterations = Math.min(iterations, lim.maxIterations);
+  if (lim.maxConcurrency !== null && isNum(concurrency)) concurrency = Math.min(concurrency, lim.maxConcurrency);
+  return { iterations, warmup, concurrency };
+}
+
+function limitsSummary(lim) {
+  const bits = [];
+  if (lim.defaults && lim.defaults.iterations !== null) bits.push(`sugerido ${plural(lim.defaults.iterations, 'iteração', 'iterações')}`);
+  if (lim.defaults && lim.defaults.warmup !== null) bits.push(`warm-up ${F.int(lim.defaults.warmup)}`);
+  if (lim.maxIterations !== null) bits.push(`máximo ${F.int(lim.maxIterations)}`);
+  if (lim.maxConcurrency !== null) bits.push(`concorrência máxima ${F.int(lim.maxConcurrency)}`);
+  return bits.join(' · ');
+}
+
+// Campos que o cenário selecionado controla: o que o usuário digita neles vale só para o cenário e não vira escolha geral.
+function isScoped(key) {
+  const lim = scenarioLimits(currentScenario());
+  if (key === 'iterations') return (!!lim.defaults && lim.defaults.iterations !== null) || lim.maxIterations !== null;
+  if (key === 'warmup') return !!lim.defaults && lim.defaults.warmup !== null;
+  if (key === 'concurrency') return lim.maxConcurrency !== null;
+  return false;
+}
+
+function setConfigField(key, value) {
+  state.config[key] = value;
+  if (!isScoped(key)) state.general[key] = value;
+}
+
+function syncInputs() {
+  const put = (el, v) => { el.value = Number.isFinite(v) ? String(v) : ''; };
+  put($('#iter'), state.config.iterations);
+  put($('#warmup'), state.config.warmup);
+}
+
+function applyScenarioConfig() {
+  const eff = effectiveConfig(currentScenario(), state.general);
+  state.config.iterations = eff.iterations;
+  state.config.warmup = eff.warmup;
+  state.config.concurrency = eff.concurrency;
+  syncInputs();
+}
+
+function generalConfigOk() {
+  const g = state.general;
+  return okInt(g.iterations, 1, GLOBAL.iterations) && okInt(g.warmup, 0, GLOBAL.warmup) && okInt(g.concurrency, 1, GLOBAL.concurrency);
+}
+
 function validateConfig() {
   const c = state.config;
+  const s = currentScenario();
+  const lim = scenarioLimits(s);
   const errors = [];
-  const okInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
   const iter = $('#iter');
   const warm = $('#warmup');
-  const itOk = okInt(c.iterations, 1, 10000);
-  const wuOk = okInt(c.warmup, 0, 1000);
+  const itOk = okInt(c.iterations, 1, lim.iterMax);
+  const wuOk = okInt(c.warmup, 0, GLOBAL.warmup);
   iter.setAttribute('aria-invalid', String(!itOk));
   warm.setAttribute('aria-invalid', String(!wuOk));
-  if (!itOk) errors.push('Iterações devem ser um inteiro entre 1 e 10.000.');
+  if (!itOk) {
+    const overScenario = lim.maxIterations !== null && Number.isInteger(c.iterations) && c.iterations > lim.maxIterations && c.iterations <= GLOBAL.iterations;
+    errors.push(overScenario
+      ? `“${s.title}” aceita no máximo ${plural(lim.maxIterations, 'iteração', 'iterações')}: cada operação é pesada e o servidor recusa mais que isso. Reduza o valor.`
+      : `Iterações devem ser um inteiro entre 1 e ${F.int(lim.iterMax)}${lim.maxIterations !== null ? ` (limite do cenário “${s.title}”)` : ''}.`);
+  }
   if (!wuOk) errors.push('Warm-up deve ser um inteiro entre 0 e 1.000.');
-  if (!okInt(c.concurrency, 1, 32)) errors.push('Concorrência deve estar entre 1 e 32.');
+  if (!okInt(c.concurrency, 1, lim.concMax)) {
+    const overScenario = lim.maxConcurrency !== null && Number.isInteger(c.concurrency) && c.concurrency > lim.maxConcurrency && c.concurrency <= GLOBAL.concurrency;
+    errors.push(overScenario
+      ? `“${s.title}” aceita concorrência de até ${F.int(lim.maxConcurrency)}: respostas muito grandes em paralelo ocupam muita memória do servidor. Reduza o valor.`
+      : `Concorrência deve estar entre 1 e ${F.int(lim.concMax)}.`);
+  }
   const latOk = okInt(c.simulatedLatencyMs, 0, 1000);
   const bw = c.simulatedBandwidthMbps;
   const bwOk = bw === null || (isNum(bw) && bw >= 0.1 && bw <= 10000);
@@ -286,7 +391,7 @@ function validateConfig() {
   $('#net-bw').setAttribute('aria-invalid', String(!bwOk));
   if (!latOk) errors.push('Latência de rede simulada deve ser um inteiro entre 0 e 1.000 ms.');
   if (!bwOk) errors.push('Banda simulada deve estar entre 0,1 e 10.000 Mbps (ou vazia, sem limite).');
-  return errors;
+  return { errors, netInvalid: !latOk || !bwOk, iterOver: !itOk && lim.maxIterations !== null && Number.isInteger(c.iterations) && c.iterations > lim.maxIterations };
 }
 
 function netSummaryHtml(c) {
@@ -295,16 +400,53 @@ function netSummaryHtml(c) {
   const parts = [];
   if (n.latency > 0) parts.push(`<b>+${F.int(n.latency)} ms</b> de latência`);
   if (n.bandwidth !== null) parts.push(`banda de <b>${F.num(n.bandwidth, 0, 2)} Mbps</b> (100 KB trafegados custam ≈ ${esc(F.ms(N.transferMs(102400, n.bandwidth)))})`);
-  return `Cada requisição HTTP recebe ${parts.join(' e ')}. <b>SIMULAÇÃO</b>: o atraso é injetado no cliente do laboratório depois que a resposta chega, não vem de uma rede real. Vale no cold run e no benchmark, não no warm-up.`;
+  return `Cada requisição HTTP recebe ${parts.join(' e ')}. <b>SIMULAÇÃO</b>: o atraso é injetado no cliente do laboratório depois que a resposta chega, não vem de uma rede real. Vale no cold run e no benchmark, não no warm-up.${n.bandwidth !== null ? ' A banda é um enlace único: requisições simultâneas dividem a banda (esperam a vez), enquanto a latência corre em paralelo.' : ''}`;
 }
 
 function sweepPlan() {
   const s = currentScenario();
+  const lim = scenarioLimits(s);
   const c = state.config;
-  const maxIt = s && isNum(s.maxIterations) ? s.maxIterations : Infinity;
-  const iterations = Math.max(1, Math.min(c.iterations, N.SWEEP_MAX_ITERATIONS, maxIt));
-  const warmup = Math.max(0, Math.min(c.warmup, N.SWEEP_MAX_WARMUP));
-  return { iterations, warmup };
+  const d = lim.defaults;
+  const itCap = Math.min(N.SWEEP_MAX_ITERATIONS, lim.iterMax, d && d.iterations !== null ? d.iterations : Infinity);
+  const wuCap = Math.min(N.SWEEP_MAX_WARMUP, d && d.warmup !== null ? d.warmup : Infinity);
+  const iterations = Math.max(1, Math.min(c.iterations, itCap));
+  const warmup = Math.max(0, Math.min(c.warmup, wuCap));
+  const concurrency = Math.max(1, Math.min(c.concurrency, lim.concMax));
+  return { iterations, warmup, concurrency };
+}
+
+const presetBase = new Map();
+
+// Chips predefinidos: o limite do cenário (se não estiver entre os predefinidos) vira um chip extra e o que passa dele fica desativado.
+function syncPresetChips(sel, scenarioMax, globalMax, overTitle) {
+  const box = $(sel);
+  if (!presetBase.has(sel)) {
+    const initial = [...box.querySelectorAll('.chip-btn')].map((b) => Number(b.dataset.v));
+    presetBase.set(sel, initial);
+    box.dataset.sig = initial.join(',');
+  }
+  const base = presetBase.get(sel);
+  const vals = scenarioMax !== null && !base.includes(scenarioMax) ? [...base, scenarioMax].sort((a, b) => a - b) : base;
+  const sig = vals.join(',');
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig;
+    box.replaceChildren(...vals.map((v) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip-btn';
+      b.dataset.v = String(v);
+      b.textContent = F.int(v);
+      return b;
+    }));
+  }
+  const cap = scenarioMax !== null ? scenarioMax : globalMax;
+  box.querySelectorAll('.chip-btn').forEach((b) => {
+    const over = Number(b.dataset.v) > cap;
+    b.dataset.over = over ? '1' : '0';
+    if (over) b.title = overTitle(cap);
+    else b.removeAttribute('title');
+  });
 }
 
 function syncChips() {
@@ -323,10 +465,105 @@ function syncChips() {
   });
 }
 
+function lastVariantBytes(scenarioId) {
+  const pools = [];
+  if (state.run && state.run.scenarioId === scenarioId) pools.push(state.run);
+  for (const r of state.history) if (r.scenarioId === scenarioId) pools.push(r);
+  for (const r of pools) {
+    const vals = (Array.isArray(r.variants) ? r.variants : [])
+      .map((v) => (isNum(v.bytesReceivedPerOperation) ? v.bytesReceivedPerOperation : 0) + (isNum(v.bytesSentPerOperation) ? v.bytesSentPerOperation : 0))
+      .filter((x) => x > 0);
+    if (vals.length) return vals;
+  }
+  return null;
+}
+
+// Piso do tempo de um run só com a espera de transferência da banda simulada (servidor e latência somam por cima).
+// A banda é um enlace único: as transferências de todas as operações (1 do cold run + as iterações) vão uma depois da outra, qualquer que seja a concorrência.
+function transferEstimate(scn, cfg, bandwidth) {
+  const per = scn ? lastVariantBytes(scn.id) : null;
+  if (!per || !isNum(bandwidth) || bandwidth <= 0) return null;
+  if (!(isNum(cfg.iterations) && cfg.iterations >= 1)) return null;
+  return { ms: per.reduce((a, b) => a + N.transferMs(b, bandwidth) * (1 + cfg.iterations), 0), maxBytes: Math.max(...per) };
+}
+
+function netHeavyText(s, lim, hasErrors) {
+  const bw = N.netParams(state.config).bandwidth;
+  if (!s || !lim.heavy || hasErrors || bw === null) return '';
+  let text = 'Banda limitada em cenário pesado: o run pode levar minutos, porque cada resposta grande espera o tempo de transferência simulado.';
+  const est = transferEstimate(s, state.config, bw);
+  if (est) text += ` Pela última medição (até ${F.bytes(est.maxBytes)} por operação), só a espera de transferência soma ≈ ${F.duration(est.ms)}.`;
+  return text;
+}
+
+function allHintText() {
+  if (!state.scenarios.length) return '';
+  if (!generalConfigOk()) return 'Executar todos indisponível: a escolha geral de iterações, warm-up ou concorrência está fora dos limites. Selecione um cenário comum e corrija os campos.';
+  const g = state.general;
+  const heavy = state.scenarios.filter((s) => scenarioLimits(s).heavy);
+  if (!heavy.length) return '';
+  const own = heavy.map((s) => {
+    const e = effectiveConfig(s, g);
+    return `“${s.title}” usa ${plural(e.iterations, 'iteração', 'iterações')}, warm-up ${F.int(e.warmup)} e concorrência ${F.int(e.concurrency)}`;
+  });
+  const rest = state.scenarios.length - heavy.length;
+  const others = rest > 0
+    ? `; ${rest === 1 ? 'o outro cenário usa' : `os outros ${F.int(rest)} cenários usam`} ${plural(g.iterations, 'iteração', 'iterações')}, warm-up ${F.int(g.warmup)} e concorrência ${F.int(g.concurrency)}`
+    : '';
+  let text = `Executar todos: ${joinList(own)} (padrões e limites do cenário)${others}.`;
+  const bw = N.netParams(state.config).bandwidth;
+  if (bw !== null) {
+    const ests = heavy
+      .map((s) => ({ s, est: transferEstimate(s, effectiveConfig(s, g), bw) }))
+      .filter((x) => x.est);
+    text += ` Com banda limitada o cenário pesado pode levar minutos${ests.length ? `: só a espera de transferência simulada soma ${joinList(ests.map((x) => `≈ ${F.duration(x.est.ms)} em “${x.s.title}”`))}` : ''}.`;
+  }
+  return text;
+}
+
+function scenarioNoticeHtml(lim) {
+  const d = lim.defaults;
+  const sugIt = d && d.iterations !== null ? d.iterations : null;
+  const segs = [];
+  if (sugIt !== null && lim.maxIterations !== null) segs.push(`sugerido ${plural(sugIt, 'iteração', 'iterações')}, máximo ${F.int(lim.maxIterations)}`);
+  else if (sugIt !== null) segs.push(`sugerido ${plural(sugIt, 'iteração', 'iterações')}`);
+  else if (lim.maxIterations !== null) segs.push(`máximo ${plural(lim.maxIterations, 'iteração', 'iterações')}`);
+  if (lim.maxConcurrency !== null) segs.push(`concorrência máxima ${F.int(lim.maxConcurrency)}`);
+  if (!segs.length && d && d.warmup !== null) segs.push(`warm-up sugerido ${F.int(d.warmup)}`);
+
+  const g = state.general;
+  const adjusted = [];
+  if (sugIt !== null) adjusted.push(plural(sugIt, 'iteração', 'iterações'));
+  else if (lim.maxIterations !== null && g.iterations > lim.maxIterations) adjusted.push(`${plural(lim.maxIterations, 'iteração', 'iterações')} (a escolha geral é ${F.int(g.iterations)})`);
+  if (d && d.warmup !== null) adjusted.push(`warm-up ${F.int(d.warmup)}`);
+  if (lim.maxConcurrency !== null && g.concurrency > lim.maxConcurrency) adjusted.push(`concorrência ${F.int(lim.maxConcurrency)} (a escolha geral é ${F.int(g.concurrency)})`);
+  const parts = [];
+  if (adjusted.length) {
+    parts.push(`Os campos assumiram ${joinList(adjusted)} neste cenário. Ao trocar de cenário, voltam à sua escolha geral (${plural(g.iterations, 'iteração', 'iterações')}, warm-up ${F.int(g.warmup)}, concorrência ${F.int(g.concurrency)}).`);
+  }
+  if (lim.maxIterations !== null || lim.maxConcurrency !== null) parts.push('A tela impede valores acima dos máximos e o servidor também os recusa.');
+
+  const c = state.config;
+  const off = (sugIt !== null && c.iterations !== sugIt) || (d && d.warmup !== null && c.warmup !== d.warmup);
+  const reset = off ? `<button type="button" class="btn sm" data-act="reset-defaults"${isBusy() ? ' disabled' : ''}>Voltar ao sugerido</button>` : '';
+  return `<span class="sn-icon" aria-hidden="true">⚠</span><div class="sn-body"><strong>${esc(`Cenário pesado: ${segs.join('; ')}.`)}</strong>${parts.length ? `<span>${esc(parts.join(' '))}</span>` : ''}</div>${reset}`;
+}
+
+let noticeSig = '';
+
+function setHint(el, text, isErr = false) {
+  if (el.textContent !== text) el.textContent = text;
+  el.hidden = !text;
+  el.classList.toggle('err', isErr);
+}
+
 function renderConfigState() {
   const busy = isBusy();
-  const errors = validateConfig();
+  const { errors, netInvalid, iterOver } = validateConfig();
   const s = currentScenario();
+  const lim = scenarioLimits(s);
+  const g = state.general;
+  const d = lim.defaults;
   const nested = !!s && s.id === 'nested';
   const nVar = s && Array.isArray(s.variants) ? s.variants.length : 0;
 
@@ -344,6 +581,25 @@ function renderConfigState() {
     summary.textContent = '';
   }
 
+  const notice = $('#scn-notice');
+  const noticeHtml = s && lim.heavy ? scenarioNoticeHtml(lim) : '';
+  if (noticeHtml !== noticeSig) {
+    noticeSig = noticeHtml;
+    notice.innerHTML = noticeHtml;
+  }
+  notice.hidden = !noticeHtml;
+
+  $('#iter').max = String(lim.iterMax);
+  const iterBits = [];
+  if (d && d.iterations !== null) iterBits.push(`sugerido neste cenário: ${F.int(d.iterations)}`);
+  if (lim.maxIterations !== null) iterBits.push(`máximo ${F.int(lim.maxIterations)}`);
+  if (iterBits.length && isScoped('iterations') && g.iterations !== state.config.iterations) iterBits.push(`escolha geral: ${F.int(g.iterations)}`);
+  setHint($('#iter-hint'), iterOver ? `Acima do limite deste cenário (máximo ${F.int(lim.maxIterations)}).` : iterBits.join(' · '), iterOver);
+  setHint($('#warm-hint'), d && d.warmup !== null ? `Sugerido neste cenário: ${F.int(d.warmup)}${g.warmup !== state.config.warmup ? ` · escolha geral: ${F.int(g.warmup)}` : ''}` : '');
+  $('#conc-hint').textContent = `workers simultâneos por bloco${lim.maxConcurrency !== null ? ` · máximo ${F.int(lim.maxConcurrency)} neste cenário${g.concurrency > lim.maxConcurrency ? ` (escolha geral: ${F.int(g.concurrency)})` : ''}` : ''}`;
+  syncPresetChips('#iter-chips', lim.maxIterations, GLOBAL.iterations, (cap) => `Acima do limite deste cenário (${plural(cap, 'iteração', 'iterações')})`);
+  syncPresetChips('#conc-chips', lim.maxConcurrency, GLOBAL.concurrency, (cap) => `Acima do limite deste cenário (concorrência ${F.int(cap)})`);
+
   const rp = $('#rest-parallel');
   rp.disabled = busy || !nested;
   rp.checked = nested && state.config.restParallel;
@@ -356,18 +612,27 @@ function renderConfigState() {
   $('#warmup').disabled = lock;
   $('#net-lat').disabled = lock;
   $('#net-bw').disabled = lock;
-  $('#net-summary').innerHTML = errors.length ? '' : netSummaryHtml(state.config);
+  $('#net-summary').innerHTML = netInvalid ? '' : netSummaryHtml(state.config);
+  setHint($('#net-warn'), netHeavyText(s, lim, netInvalid));
   const plan = sweepPlan();
-  const bwText = state.config.simulatedBandwidthMbps === null ? 'banda sem limite' : `banda ${F.num(state.config.simulatedBandwidthMbps, 0, 2)} Mbps`;
-  $('#sweep-hint').textContent = s && !errors.length
-    ? `Varredura de rede: roda “${s.title}” em ${joinList(N.SWEEP_LATENCIES.map((l) => `${F.int(l)} ms`))} de latência (${bwText}), com ${F.int(plan.iterations)} iterações e warm-up ${F.int(plan.warmup)} por etapa.`
-    : '';
-  document.querySelectorAll('.chip-btn').forEach((b) => { b.disabled = lock; });
+  const bw = N.netParams(state.config).bandwidth;
+  const bwText = bw === null ? 'banda sem limite' : `banda ${F.num(bw, 0, 2)} Mbps`;
+  let sweepText = '';
+  if (s && !errors.length) {
+    sweepText = `Varredura de rede: roda “${s.title}” em ${joinList(N.SWEEP_LATENCIES.map((l) => `${F.int(l)} ms`))} de latência (${bwText}), com ${F.int(plan.iterations)} iterações e warm-up ${F.int(plan.warmup)} por etapa${lim.maxConcurrency !== null ? ` e concorrência ${F.int(plan.concurrency)}` : ''}.`;
+    if (lim.heavy) {
+      const est = bw === null ? null : transferEstimate(s, plan, bw);
+      sweepText += ` Cenário pesado: cada etapa é um run completo e pode levar minutos${est ? `; só a espera de transferência simulada soma ≈ ${F.duration(est.ms * N.SWEEP_LATENCIES.length)} nas ${F.int(N.SWEEP_LATENCIES.length)} etapas` : ''}.`;
+    }
+  }
+  setHint($('#sweep-hint'), sweepText);
+  setHint($('#all-hint'), allHintText());
+  document.querySelectorAll('.chip-btn').forEach((b) => { b.disabled = lock || b.dataset.over === '1'; });
   document.querySelectorAll('input[name="scenario"]').forEach((r) => { r.disabled = lock; });
 
   const canRun = !busy && !errors.length && !!s;
   $('#btn-run').disabled = !canRun;
-  $('#btn-all').disabled = busy || !!errors.length || !state.scenarios.length;
+  $('#btn-all').disabled = busy || netInvalid || !generalConfigOk() || !state.scenarios.length;
   $('#btn-sweep').disabled = !canRun;
 
   const running = !!state.run && state.run.status === 'running';
@@ -386,32 +651,42 @@ function renderConfigState() {
 
 function bindConfig() {
   $('#iter').addEventListener('input', (e) => {
-    state.config.iterations = e.target.value === '' ? NaN : Number(e.target.value);
+    setConfigField('iterations', e.target.value === '' ? NaN : Number(e.target.value));
     renderConfigState();
   });
   $('#warmup').addEventListener('input', (e) => {
-    state.config.warmup = e.target.value === '' ? NaN : Number(e.target.value);
+    setConfigField('warmup', e.target.value === '' ? NaN : Number(e.target.value));
     renderConfigState();
   });
   $('#iter-chips').addEventListener('click', (e) => {
     const b = e.target.closest('.chip-btn');
-    if (!b) return;
-    state.config.iterations = Number(b.dataset.v);
+    if (!b || b.disabled) return;
+    setConfigField('iterations', Number(b.dataset.v));
     $('#iter').value = b.dataset.v;
     renderConfigState();
   });
   $('#conc-chips').addEventListener('click', (e) => {
     const b = e.target.closest('.chip-btn');
-    if (!b) return;
-    state.config.concurrency = Number(b.dataset.v);
+    if (!b || b.disabled) return;
+    setConfigField('concurrency', Number(b.dataset.v));
     renderConfigState();
+  });
+  $('#scn-notice').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act="reset-defaults"]');
+    if (!b || isBusy()) return;
+    const eff = effectiveConfig(currentScenario(), state.general);
+    state.config.iterations = eff.iterations;
+    state.config.warmup = eff.warmup;
+    syncInputs();
+    renderConfigState();
+    $('#iter').focus();
   });
   $('#net-lat').addEventListener('input', (e) => {
     state.config.simulatedLatencyMs = e.target.value === '' ? NaN : Number(e.target.value);
     renderConfigState();
   });
   $('#net-bw').addEventListener('input', (e) => {
-    state.config.simulatedBandwidthMbps = e.target.value === '' ? null : Number(e.target.value);
+    state.config.simulatedBandwidthMbps = e.target.value === '' ? (e.target.validity.badInput ? NaN : null) : Number(e.target.value);
     renderConfigState();
   });
   $('#lat-chips').addEventListener('click', (e) => {
@@ -521,7 +796,7 @@ async function doRun() {
 async function doRunAll() {
   if (isBusy() || !state.scenarios.length) return;
   clearBanners();
-  const cfgSnapshot = { ...state.config };
+  const cfgSnapshot = { ...state.config, ...state.general };
   const batch = { ids: state.scenarios.map((s) => s.id), index: 0, results: {}, active: true, cancel: false, config: cfgSnapshot, aborted: null };
   state.batch = batch;
   state.viewingHistory = false;
@@ -538,7 +813,7 @@ async function doRunAll() {
       renderConfigState();
       let runId;
       try {
-        runId = await startOne(id);
+        runId = await startOne(id, effectiveConfig(scenarioOf(id), cfgSnapshot));
       } catch (e) {
         state.starting = false;
         handleStartError(e);
@@ -585,7 +860,7 @@ async function doSweep() {
     cancel: false,
     scenarioId: scn.id,
     bandwidth: c.simulatedBandwidthMbps,
-    config: { iterations: plan.iterations, warmup: plan.warmup, concurrency: c.concurrency, restParallel: scn.id === 'nested' ? !!c.restParallel : false, userIterations: c.iterations, userWarmup: c.warmup },
+    config: { iterations: plan.iterations, warmup: plan.warmup, concurrency: plan.concurrency, restParallel: scn.id === 'nested' ? !!c.restParallel : false, userIterations: c.iterations, userWarmup: c.warmup },
     steps: N.SWEEP_LATENCIES.map((latency) => ({ latency, status: 'pending', run: null })),
     index: 0,
     aborted: null,
@@ -610,7 +885,7 @@ async function doSweep() {
       renderConfigState();
       let runId;
       try {
-        runId = await startOne(scn.id, { iterations: plan.iterations, warmup: plan.warmup, simulatedLatencyMs: step.latency, simulatedBandwidthMbps: c.simulatedBandwidthMbps });
+        runId = await startOne(scn.id, { iterations: plan.iterations, warmup: plan.warmup, concurrency: plan.concurrency, simulatedLatencyMs: step.latency, simulatedBandwidthMbps: c.simulatedBandwidthMbps });
       } catch (e) {
         state.starting = false;
         step.status = 'failed';
@@ -639,6 +914,7 @@ async function doSweep() {
     }
   } finally {
     sweep.active = false;
+    if (sweep.aborted) sweep.steps.forEach((st) => { if (st.status === 'pending') st.status = 'skipped'; });
     state.starting = false;
     state.cancelling = false;
     renderSweep();
@@ -937,7 +1213,7 @@ function netCardHtml(it, run) {
   if (!cfgOn && !(sim !== null && sim > 0)) return '';
   const row = (key, label, value) => `<div class="mrow"><dt>${tipLabel(key, label)}</dt><dd>${value}</dd></div>`;
   const med = v.latency && isNum(v.latency.median) ? v.latency.median : null;
-  const add = N.additive(run.config);
+  const add = N.additive(run.config, v);
   let body;
   if (sim === null) {
     body = `${row('simSum', 'Rede simulada (soma injetada)', F.DASH)}<p class="note-small">O servidor não informou a rede injetada deste run.</p>`;
@@ -952,7 +1228,7 @@ function netCardHtml(it, run) {
       <p class="note-small">Tempo real = mediana − soma injetada (requisições em sequência).</p>`;
   } else {
     body = `<dl>${row('simSum', 'Rede simulada (soma injetada)', F.ms(sim))}</dl>
-      <p class="note-small warnish">Soma dos atrasos de cada requisição. Com requisições em paralelo ou concorrência maior que 1 os atrasos se sobrepõem: o acréscimo real na latência é menor que esta soma, por isso ela não é subtraída da mediana.</p>`;
+      <p class="note-small warnish">Soma dos atrasos de cada requisição. Esta variante dispara requisições em paralelo, então os atrasos delas se sobrepõem: o acréscimo real na latência é menor que esta soma, por isso ela não é subtraída da mediana.</p>`;
   }
   return `<section class="mgroup netgroup"><h4>Rede simulada <span class="sim-badge">simulação</span></h4>${body}</section>`;
 }
@@ -1034,13 +1310,12 @@ const ROWS = [
 function rowsFor(run) {
   const netOn = N.netParams(run.config).on || (Array.isArray(run.variants) && run.variants.some((v) => (N.simOf(v) || 0) > 0));
   if (!netOn) return ROWS;
-  const add = N.additive(run.config);
   const netRows = [
     { g: 'Rede simulada (simulação injetada no cliente)' },
     { label: 'Rede injetada (soma por operação)', tip: 'simSum', get: (v) => N.simOf(v), fmt: F.ms, better: 'low' },
   ];
-  if (add) {
-    netRows.push({ label: 'Tempo real medido (mediana − rede)', tip: 'real', get: (v) => (v.latency && isNum(v.latency.median) && N.simOf(v) !== null ? Math.max(0, v.latency.median - N.simOf(v)) : null), fmt: F.ms, better: 'low' });
+  if ((run.variants || []).some((v) => N.additive(run.config, v))) {
+    netRows.push({ label: 'Tempo real medido (mediana − rede)', tip: 'real', get: (v) => (N.additive(run.config, v) && v.latency && isNum(v.latency.median) && N.simOf(v) !== null ? Math.max(0, v.latency.median - N.simOf(v)) : null), fmt: F.ms, better: 'low' });
   }
   return [...ROWS.slice(0, 8), ...netRows, ...ROWS.slice(8)];
 }
@@ -1096,8 +1371,8 @@ function renderCompare(items, run) {
     return `<tr class="${rk.tie ? 'tied' : ''}"><th scope="row">${r.tip ? tipLabel(r.tip, esc(r.label)) : esc(r.label)}${tag}</th>${cells}</tr>`;
   }).join('');
   const partial = run.status === 'running' ? '<caption class="muted" style="text-align:left;padding-bottom:.4rem">Valores parciais: atualizam enquanto o benchmark roda.</caption>' : '';
-  const netNote = (N.netParams(run.config).on && !N.additive(run.config))
-    ? '<p class="chart-note">Rede injetada é a <b>soma</b> dos atrasos de cada requisição. Com requisições em paralelo ou concorrência maior que 1 os atrasos se sobrepõem e a soma supera o acréscimo real na latência; por isso não há linha de “tempo real” nem subtração da mediana neste run.</p>'
+  const netNote = (N.netParams(run.config).on && N.overlaps(run.config, run.variants))
+    ? '<p class="chart-note">Rede injetada é a <b>soma</b> dos atrasos de cada requisição. Nas variantes que disparam requisições em paralelo (“REST em paralelo”) os atrasos se sobrepõem e a soma supera o acréscimo real na latência; por isso, para elas, o “tempo real” aparece como — e a soma não é subtraída da mediana.</p>'
     : '';
   box.innerHTML = `<table class="cmp">${partial}<thead><tr><th scope="col">Métrica</th>${head}</tr></thead><tbody>${body}</tbody></table>${netNote}`;
 }
@@ -1155,6 +1430,19 @@ function requestFormula(it, run, n) {
   if (!n) return F.DASH;
   const isRestChain = run.scenarioId === 'nested' && it.v.kind === 'rest' && n > 2;
   return isRestChain ? `1 + 1 + ${F.int(n - 2)} = ${F.int(n)}` : `${F.int(n)}`;
+}
+
+// A amostra é só um trecho inicial: o painel nunca monta mais que SAMPLE_VIEW_CHARS caracteres, mesmo que o servidor mande mais.
+function sampleHtml(sample, trace) {
+  if (typeof sample !== 'string' || !sample) return '<p class="muted">Sem resposta de amostra ainda.</p>';
+  const cut = sample.length > SAMPLE_VIEW_CHARS;
+  const shown = cut ? sample.slice(0, SAMPLE_VIEW_CHARS) : sample;
+  const last = trace.length ? trace[trace.length - 1] : null;
+  const full = last && isNum(last.bytesReceived) ? last.bytesReceived : 0;
+  const notes = [];
+  if (cut) notes.push(`Exibindo os primeiros ${F.int(SAMPLE_VIEW_CHARS)} de ${F.int(sample.length)} caracteres.`);
+  if (full > shown.length * 1.5 + 200) notes.push(`Trecho inicial da resposta; a resposta completa da última requisição tem ${F.bytes(full)}.`);
+  return `<pre class="code" tabindex="0">${esc(shown)}</pre>${notes.length ? `<p class="note-small">${esc(notes.join(' '))}</p>` : ''}`;
 }
 
 function renderTrace(run, items) {
@@ -1225,9 +1513,7 @@ function renderTrace(run, items) {
       </div>${r.body ? `<div class="wf-body"><pre class="code" tabindex="0">${esc(r.body)}</pre></div>` : ''}`;
     }).join('');
     const more = trace.length > CAP ? `<div class="wf-more">+ ${F.int(trace.length - CAP)} requisições a mais não exibidas</div>` : '';
-    const resp = it.v.sampleResponse
-      ? `<pre class="code" tabindex="0">${esc(it.v.sampleResponse)}</pre>`
-      : '<p class="muted">Sem resposta de amostra ainda.</p>';
+    const resp = sampleHtml(it.v.sampleResponse, trace);
     const simSummary = simSum > 0 ? ` · rede simulada (soma) ${esc(F.ms(simSum))}` : '';
     return `<article class="tv${simSum > 0 ? ' has-sim' : ''}" style="--vc:${it.st.color}">
       <header><span class="kindtag kind-${esc(it.v.kind)}">${kindName(it.v.kind)}</span><strong>${esc(it.label)}</strong>
@@ -1286,18 +1572,19 @@ function networkParagraph(run, items) {
   const withSim = items.filter((it) => N.simOf(it.v) !== null && it.v.latency && isNum(it.v.latency.median));
   if (!items.some((it) => it.v.latency && isNum(it.v.latency.median))) return `${head} Aguardando as primeiras amostras para separar o tempo real da rede.`;
   if (!withSim.length) return `${head} O servidor não informou a rede injetada (simulatedNetworkMsPerOperation) neste run.`;
-  const add = N.additive(run.config);
   const parts = withSim.map((it) => {
     const sim = N.simOf(it.v);
     const med = it.v.latency.median;
     const reqs = isNum(it.v.requestsPerOperation) ? ` em ${val(plural(it.v.requestsPerOperation, 'requisição', 'requisições'))}` : '';
-    return add
+    return N.additive(run.config, it.v)
       ? `${esc(it.label)}: ${val(F.ms(sim))} injetados${reqs}${med > 0 ? ` (${F.pct(Math.min(1, sim / med), 0)} da mediana)` : ''}; tempo real medido ≈ ${val(F.ms(Math.max(0, med - sim)))}`
       : `${esc(it.label)}: soma injetada de ${val(F.ms(sim))}${reqs}`;
   });
-  const tail = add
-    ? ' Cada requisição a mais paga a rede de novo: é o que o loopback esconde.'
-    : ' Com requisições em paralelo ou concorrência maior que 1 os atrasos se sobrepõem: a soma injetada supera o acréscimo real na latência e por isso não foi subtraída da mediana.';
+  const overlapped = withSim.filter((it) => !N.additive(run.config, it.v));
+  const tail = [
+    overlapped.length < withSim.length ? ' Cada requisição a mais em sequência paga a rede de novo: é o que o loopback esconde.' : '',
+    overlapped.length ? ` Em ${joinList(overlapped.map((it) => esc(it.label)))} as requisições vão em paralelo e os atrasos se sobrepõem: a soma injetada supera o acréscimo real na latência e por isso não foi subtraída da mediana.` : '',
+  ].join('');
   return `${head} ${parts.join(' · ')}.${tail}`;
 }
 
@@ -1306,7 +1593,7 @@ function renderMethodNet(run) {
   if (!box) return;
   const n = run ? N.netParams(run.config) : { on: false };
   box.textContent = n.on
-    ? 'Rede simulada: o atraso (latência mais tempo de transferência) é injetado no cliente do laboratório, por requisição, depois do último byte da resposta e antes de ela contar como concluída; o tráfego em si continua em loopback e o atraso não é aplicado no warm-up. O tempo real medido, a CPU e a memória com rede simulada ficam acima dos de um run em loopback puro (threads e CPU ociosos esperando entre requisições, mais a alocação do próprio simulador): compare essas métricas só entre runs com a mesma rede.'
+    ? 'Rede simulada: o atraso (latência mais tempo de transferência) é injetado no cliente do laboratório, por requisição, depois do último byte da resposta e antes de ela contar como concluída; o tráfego em si continua em loopback e o atraso não é aplicado no warm-up. A latência corre em paralelo para todas as requisições, mas a banda é um enlace único: requisições simultâneas dividem a banda (esperam a vez). O tempo real medido, a CPU e a memória com rede simulada ficam acima dos de um run em loopback puro (threads e CPU ociosos esperando entre requisições, mais a alocação do próprio simulador): compare essas métricas só entre runs com a mesma rede.'
     : 'Rede simulada desligada neste run (loopback puro); quando ligada, o atraso é injetado no cliente do laboratório, por requisição, e não vale no warm-up.';
 }
 
@@ -1407,6 +1694,7 @@ async function loadHistory() {
     const list = await api.listRuns();
     state.history = Array.isArray(list) ? list : [];
     renderHistory();
+    renderConfigState();
   } catch (e) {
     $('#history').innerHTML = `<div class="banner error" role="alert"><span class="b-msg">Não foi possível carregar o histórico: ${esc(e.message)}</span><button type="button" class="btn sm" id="hist-retry">Tentar novamente</button></div>`;
     $('#hist-retry').addEventListener('click', loadHistory);
@@ -1438,7 +1726,8 @@ function renderMatrix() {
   const ids = b ? Object.keys(b.results) : [];
   sec.hidden = !b;
   if (!b) return;
-  $('#mx-sub').textContent = `Executar todos · ${configText(b.config)} · ${netText(b.config)}${b.active ? ' · em andamento' : ''}`;
+  const ownRules = state.scenarios.some((s) => b.ids.includes(s.id) && scenarioLimits(s).heavy);
+  $('#mx-sub').textContent = `Executar todos · ${configText(b.config)}${ownRules ? ' (cenários pesados usam os próprios padrões e limites)' : ''} · ${netText(b.config)}${b.active ? ' · em andamento' : ''}`;
   const rows = [];
   for (const sid of b.ids) {
     const scn = scenarioOf(sid);
@@ -1459,7 +1748,7 @@ function renderMatrix() {
       const m = medians[i];
       const best = rk.best.has(i);
       rows.push(`<tr style="--vc:${it.st.color}">
-        ${i === 0 ? `<td class="scn-cell" rowspan="${items.length}">${title}${statusTag}<span class="net-tag" title="Rede usada neste run">${esc(N.netLabel(run.config))}</span></td>` : ''}
+        ${i === 0 ? `<td class="scn-cell" rowspan="${items.length}">${title}${statusTag}<span class="net-tag" title="Rede usada neste run">${esc(N.netLabel(run.config))}</span>${scenarioLimits(scn).heavy ? `<span class="net-tag" title="Configuração usada neste cenário">${esc(configText(run.config))}</span>` : ''}</td>` : ''}
         <th scope="row">${C.swatch(it.st)} ${esc(it.label)}</th>
         <td class="num ${best ? 'best' : ''}">${esc(F.ms(m))}${best ? '<span class="tag">melhor</span>' : ''}${isNum(m) ? `<span class="mini-bar" style="width:${Math.max(2, (m / maxMed) * 100).toFixed(1)}%"></span>` : ''}</td>
         <td class="num">${esc(F.ms(v.latency && v.latency.p95))}</td>
@@ -1524,7 +1813,7 @@ function renderSweepSteps() {
     box.innerHTML = '';
     return;
   }
-  const TEXT = { pending: 'aguardando', running: 'em execução', completed: 'concluída', cancelled: 'cancelada', failed: 'falhou' };
+  const TEXT = { pending: 'aguardando', running: 'em execução', completed: 'concluída', cancelled: 'cancelada', failed: 'falhou', skipped: 'não executada' };
   box.innerHTML = sw.steps.map((st, i) => {
     let status = st.status;
     let text = TEXT[status] || status;
@@ -1564,7 +1853,7 @@ function sweepTableHtml(d, an) {
     }).join('');
     const k = an.slopes[si];
     const lastReq = [...s.reqs].reverse().find(isNum);
-    return `<tr style="--vc:${s.st.color}"><th scope="row">${C.swatch(s.st)} ${esc(s.label)}</th>${cells}<td class="num">${isNum(k) ? esc(`+${F.ms(k * 10)}`) : F.DASH}</td><td class="num">${esc(F.count(lastReq))}</td></tr>`;
+    return `<tr style="--vc:${s.st.color}"><th scope="row">${C.swatch(s.st)} ${esc(s.label)}</th>${cells}<td class="num">${isNum(k) ? esc(N.signedMs(k * 10)) : F.DASH}</td><td class="num">${esc(F.count(lastReq))}</td></tr>`;
   }).join('');
   return `<table class="sweep-table"><caption class="muted" style="text-align:left;padding-bottom:.4rem">Mediana da latência por etapa (inclui a rede simulada). “Rede” = soma injetada por operação. “Melhor” só quando a diferença passa de ${esc(F.pct(N.TIE, 0))}.</caption><thead><tr><th scope="col">Variante</th>${head}<th scope="col" class="num"><span class="mt" title="Quanto a mediana sobe a cada +10 ms de latência de rede (regressão linear das medianas medidas).">Inclinação / +10 ms</span></th><th scope="col" class="num">${tipLabel('requests', 'Req. / op.')}</th></tr></thead><tbody>${body}</tbody></table>`;
 }
@@ -1610,7 +1899,7 @@ function renderSweep() {
       active: sw.active,
       errorVariants: d.series.filter((s) => s.errors > 0).map((s) => s.label),
       requests,
-      overlap: !N.additive(lastRun.config || sw.config),
+      overlap: N.overlaps(lastRun.config || sw.config, lastRun.variants),
     });
     const partial = sw.active ? ' partial' : '';
     $('#sweep-reading').innerHTML = paras.map(([title, html]) => `<p class="${partial.trim()}"><strong class="dim">${esc(title)}</strong>${sw.active ? '<em>Leitura parcial, atualizada a cada etapa concluída.</em> ' : ''}${html}</p>`).join('');

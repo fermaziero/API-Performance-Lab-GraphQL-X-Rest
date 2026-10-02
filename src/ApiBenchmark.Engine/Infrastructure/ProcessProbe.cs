@@ -17,5 +17,6 @@ internal static class ProcessProbe
         }
     }
 
-    public static long AllocatedBytes() => GC.GetTotalAllocatedBytes(false);
+    // O modo aproximado do GC (precise: false) usa contadores por heap que, com Server GC, ficam atrasados e podem dar delta zero ou subestimado.
+    public static long AllocatedBytes() => GC.GetTotalAllocatedBytes(precise: true);
 }

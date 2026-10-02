@@ -159,6 +159,8 @@ internal sealed class RunState
                 v.SqlTotal = (v.SqlTotal ?? 0) + sqlDelta.Value;
             }
 
+            // Delta com sinal: o contador de CPU do processo avança em passos de ~15,6 ms e o desconto do giro é em tempo de parede,
+            // então um bloco curto pode sair negativo; cortar em zero por bloco enviesaria o total para cima (o corte vale só no total).
             if (cpuMsDelta.HasValue)
             {
                 v.CpuMsTotal = (v.CpuMsTotal ?? 0) + cpuMsDelta.Value;
@@ -317,7 +319,7 @@ internal sealed class RunState
             Round(sentPerOp),
             Round(simulatedPerOp),
             PerBlockOp(r.SqlTotal),
-            PerBlockOp(r.CpuMsTotal),
+            PerBlockOp(r.CpuMsTotal is { } cpuTotal ? Math.Max(0, cpuTotal) : null),
             r.FinishedBlockOps > 0 ? Round((double)r.AllocatedTotal / r.FinishedBlockOps) : null,
             r.Fields,
             r.Errors,

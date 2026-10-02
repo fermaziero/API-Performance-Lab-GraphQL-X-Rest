@@ -139,7 +139,16 @@ public sealed class DatabaseSettings
 
     private static string ResolveSqlite(string connectionString, string contentRoot)
     {
-        var csb = new SqliteConnectionStringBuilder(connectionString);
+        SqliteConnectionStringBuilder csb;
+        try
+        {
+            csb = new SqliteConnectionStringBuilder(connectionString);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new DatabaseSetupException($"ConnectionStrings:Lab inválida: {ex.Message}");
+        }
+
         var source = csb.DataSource;
         if (!string.IsNullOrEmpty(source)
             && !source.Equals(":memory:", StringComparison.OrdinalIgnoreCase)

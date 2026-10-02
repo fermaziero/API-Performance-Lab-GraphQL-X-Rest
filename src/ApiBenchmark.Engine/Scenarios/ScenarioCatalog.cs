@@ -16,14 +16,20 @@ internal sealed record ScenarioDefinition(
     string Title,
     string Description,
     string Need,
-    IReadOnlyList<VariantDefinition> Variants)
+    IReadOnlyList<VariantDefinition> Variants,
+    ScenarioDefaults? Defaults = null,
+    int? MaxIterations = null,
+    int? MaxConcurrency = null)
 {
     public ScenarioInfo ToInfo() => new(
         Id,
         Title,
         Description,
         Need,
-        Variants.Select(v => new VariantInfo(v.Id, v.Label, v.Kind, v.Description, v.RequestPreview)).ToList());
+        Variants.Select(v => new VariantInfo(v.Id, v.Label, v.Kind, v.Description, v.RequestPreview)).ToList(),
+        Defaults,
+        MaxIterations,
+        MaxConcurrency);
 }
 
 internal static class ScenarioCatalog
@@ -32,6 +38,11 @@ internal static class ScenarioCatalog
     private const int CustomerId = 15;
     private const int OrdersTake = 50;
     private const int ProductsTake = 50;
+    private const int VolumeTake = 100000;
+    private const int VolumeIterations = 3;
+    private const int VolumeWarmup = 0;
+    private const int VolumeMaxIterations = 100;
+    private const int VolumeMaxConcurrency = 2;
 
     private const string ProductFullQuery = """
         {
@@ -75,6 +86,42 @@ internal static class ScenarioCatalog
             name
             price
             sku
+          }
+        }
+        """;
+
+    private const string ProductVolumeQuery = """
+        {
+          products(take: 100000) {
+            name
+            price
+            sku
+          }
+        }
+        """;
+
+    private const string ProductVolumeFullQuery = """
+        {
+          products(take: 100000) {
+            id
+            name
+            description
+            price
+            stock
+            sku
+            createdAt
+            updatedAt
+            category {
+              id
+              name
+              description
+            }
+            supplier {
+              id
+              name
+              country
+              contactEmail
+            }
           }
         }
         """;
@@ -217,6 +264,45 @@ internal static class ScenarioCatalog
                     ctx => ctx.GraphQLAsync(ProductListQuery),
                     Paths("products.name", "products.price", "products.sku")),
             ]),
+
+        new ScenarioDefinition(
+            "volume",
+            "Carga em volume (100.000 produtos) — teste de estresse",
+            "Teste de estresse: a tela pede os 100.000 produtos de uma só vez. Em produção os dois lados paginariam; " +
+            "aqui o objetivo é ver o que o volume extremo faz com bytes trafegados, tempo de serialização e memória. " +
+            "O REST devolve 100 mil recursos completos; o GraphQL pode pedir só as três colunas usadas ou todos os campos " +
+            "(inclusive categoria e fornecedor), o que isola o custo do volume do custo do protocolo.",
+            "A tela lista todos os 100.000 produtos mostrando apenas nome, preço e SKU de cada um.",
+            [
+                new VariantDefinition(
+                    "rest",
+                    "REST (100 mil recursos inteiros)",
+                    VariantKind.Rest,
+                    "GET devolve 100.000 ProductDto completos (com categoria e fornecedor); a tela usa só name, price e sku de cada um.",
+                    $"GET /api/products?take={VolumeTake}",
+                    ctx => ctx.GetAsync($"/api/products?take={VolumeTake}"),
+                    Paths("name", "price", "sku")),
+                new VariantDefinition(
+                    "graphql",
+                    "GraphQL (só nome, preço e SKU)",
+                    VariantKind.Graphql,
+                    "A query pede somente name, price e sku dos 100.000 produtos; o SELECT traz só essas colunas.",
+                    ProductVolumeQuery,
+                    ctx => ctx.GraphQLAsync(ProductVolumeQuery),
+                    Paths("products.name", "products.price", "products.sku")),
+                new VariantDefinition(
+                    "graphql-full",
+                    "GraphQL (todos os campos)",
+                    VariantKind.Graphql,
+                    "A query pede todos os campos equivalentes ao ProductDto, inclusive category e supplier: " +
+                    "mesmo payload do REST, para separar o custo do volume do custo do protocolo.",
+                    ProductVolumeFullQuery,
+                    ctx => ctx.GraphQLAsync(ProductVolumeFullQuery),
+                    Paths("products.name", "products.price", "products.sku")),
+            ],
+            new ScenarioDefaults(VolumeIterations, VolumeWarmup),
+            VolumeMaxIterations,
+            VolumeMaxConcurrency),
 
         new ScenarioDefinition(
             "nested",
